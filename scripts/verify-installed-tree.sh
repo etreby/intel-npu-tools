@@ -30,9 +30,17 @@ check() {
 echo "Commands:"
 for command in intel-npu-info intel-npu-mcp intel-npu-ocr \
                intel-npu-speech intel-npu-search intel-npu-panel \
-               intel-npu-transcribe "$NAME-setup"; do
+               "$NAME-setup"; do
   check "$PREFIX/bin/$command" test -x "$PREFIX/bin/$command"
 done
+# The transcribe command arrived after release 0.3.0, which is what the
+# install-arch-from-aur job still installs when this check runs. Gate it on
+# the module actually being in the tree rather than on the package version:
+# the working-tree install always carries both, and once a release ships the
+# module every install passes the check above it — which is the point.
+if find "$LIBDIR" -name transcribe.py -print -quit | grep -q .; then
+  check "$PREFIX/bin/intel-npu-transcribe" test -x "$PREFIX/bin/intel-npu-transcribe"
+fi
 
 echo "Library tree:"
 # The importable source has to be a working tree, not only the built modules,
