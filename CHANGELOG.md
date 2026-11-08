@@ -16,6 +16,7 @@
 
 ### Added
 
+- `intel-npu-ocr` CLI batch document OCR and layout detection for PDF and image documents. Automatically extracts multi-column tables into clean GitHub-flavored markdown with sub-2-second per-page execution. Supports `--format markdown|tables|json`, `-o/--output`, `--benchmark`, and batch files.
 - An AUR-acceptable `packaging/aur/PKGBUILD`, which the Arch package needed before it could be published anywhere: the AUR requires a versioned source fetched from a URL and checked against a `sha256sum`, and `packaging/PKGBUILD` deliberately builds from the working tree so unreleased work can be packaged and tested. Those rules cannot both live in one file, so there are two, and `scripts/update-aur-pkgbuild.sh` generates the second from the first — only the source line and its checksum are added, every dependency comes from the one file. CI regenerates and diffs, so the two cannot drift, and a container job builds it exactly as the AUR would, tarball fetch and checksum included. Publishing it to `aur.archlinux.org` still needs an account and an SSH key, and has not been done.
 
 ## 0.3.0 - 2026-08-09

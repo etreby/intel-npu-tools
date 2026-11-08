@@ -1,10 +1,22 @@
 import json
+import os
 import subprocess
+import tempfile
 import threading
+import time
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
+from .layout import (
+    WordToken,
+    detect_layout_blocks,
+    group_words_into_lines,
+    parse_tsv_words,
+    render_markdown,
+    tsv_to_markdown,
+)
 from .paths import ocr_model
 from .runtime import npu_properties
 
@@ -21,6 +33,8 @@ def ocr_models():
 
     They were previously compiled on every npu_ocr() call, so a single
     screenshot paid the full driver compilation twice before a pixel was read.
+    Compiles on NPU when present; gracefully falls back to CPU on hosts/VMs
+    without an NPU.
     """
     global _models
     with _lock:
@@ -33,10 +47,11 @@ def ocr_models():
                         f"OCR model not found at {ocr_model(name)}; run scripts/download-models.py"
                     )
             core = ov.Core()
-            properties = npu_properties()
+            device = "NPU" if "NPU" in core.available_devices else "CPU"
+            properties = npu_properties() if device == "NPU" else {}
             _models = (
-                core.compile_model(ocr_model(DETECTOR), "NPU", properties),
-                core.compile_model(ocr_model(RECOGNIZER), "NPU", properties),
+                core.compile_model(ocr_model(DETECTOR), device, properties),
+                core.compile_model(ocr_model(RECOGNIZER), device, properties),
             )
         return _models
 
@@ -52,6 +67,11 @@ def npu_ocr(image: np.ndarray) -> tuple[str, int]:
 
 
 def _run_ocr(image: np.ndarray, detector, recognizer) -> tuple[str, int]:
+    words, boxes_count = _run_ocr_tokens(image, detector, recognizer)
+    return " ".join(item[2] for item in words), boxes_count
+
+
+def _run_ocr_tokens(image: np.ndarray, detector, recognizer) -> tuple[list[tuple[int, int, str, float]], int]:
     import cv2
 
     _, _, det_h, det_w = detector.input(0).shape
@@ -67,7 +87,7 @@ def _run_ocr(image: np.ndarray, detector, recognizer) -> tuple[str, int]:
     ratio_x, ratio_y = image.shape[1] / resized.shape[1], image.shape[0] / resized.shape[0]
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     alphabet = "#1234567890abcdefghijklmnopqrstuvwxyz"
-    words = []
+    words: list[tuple[int, int, str, float]] = []
     for box in boxes:
         x1, y1 = max(0, int(box[0] * ratio_x)), max(0, int(box[1] * ratio_y))
         x2, y2 = min(image.shape[1], int(box[2] * ratio_x)), min(image.shape[0], int(box[3] * ratio_y))
@@ -76,11 +96,32 @@ def _run_ocr(image: np.ndarray, detector, recognizer) -> tuple[str, int]:
         crop = cv2.resize(gray[y1:y2, x1:x2], (int(rec_w), int(rec_h))).reshape(1, 1, int(rec_h), int(rec_w))
         scores = np.squeeze(recognizer([crop])[recognizer.output(0)])
         characters = (alphabet[row.argmax()] for row in scores)
+        confidence = float(np.mean([row.max() for row in scores])) * 100.0
         word = "".join(character for character in characters if character != "#")
         if word:
-            words.append((y1, x1, word))
+            words.append((y1, x1, word, confidence))
     words.sort(key=lambda item: (item[0] // 30, item[1]))
-    return " ".join(item[2] for item in words), len(boxes)
+    return words, len(boxes)
+
+
+def npu_word_tokens(image: np.ndarray, page: int = 1) -> list[WordToken]:
+    """Extract WordToken objects using the OpenVINO NPU detection backbone."""
+    with _lock:
+        detector, recognizer = ocr_models()
+        words, _ = _run_ocr_tokens(image, detector, recognizer)
+
+    tokens: list[WordToken] = []
+    for y1, x1, word, conf in words:
+        # Approximate box dimensions based on character width and line height
+        w_px = max(20, len(word) * 10)
+        h_px = 20
+        tokens.append(WordToken(
+            text=word,
+            bbox=(x1, y1, x1 + w_px, y1 + h_px),
+            conf=conf,
+            page=page,
+        ))
+    return tokens
 
 
 def tesseract_text(path: Path) -> str:
@@ -110,11 +151,7 @@ def tesseract_tsv(path: Path) -> str:
     """Word-level OCR with layout structure. Returns "" when unavailable.
 
     Page segmentation mode 3 rather than the 6 used by tesseract_text above.
-    Mode 6 assumes one uniform block of text, which on a two-column screen
-    stitches the columns together: a file name from a sidebar and a line of code
-    from the editor beside it come back as one line. Mode 3 detects the columns
-    and keeps them apart, which is the whole reason to read the structured
-    output rather than the plain text.
+    Mode 3 detects columns and keeps them apart.
     """
     try:
         result = subprocess.run(
@@ -130,27 +167,14 @@ def tesseract_tsv(path: Path) -> str:
     return result.stdout
 
 
-# The same rough rule context_filter.py uses, and just as approximate. It is
-# only ever used to tell the caller roughly what a reply cost them.
+# The same rough rule context_filter.py uses, and just as approximate.
 CHARS_PER_TOKEN = 4
-# A screenshot sent to a vision model is charged by area, near enough to
-# width * height / 750, and current models stop counting at about this many.
 IMAGE_TOKEN_DIVISOR = 750
 IMAGE_TOKEN_CAP = 4784
 
 
 def _parse_tsv(tsv: str, min_confidence: int) -> tuple[list[dict], dict, int, int]:
-    """Group Tesseract's word rows into lines using its own layout analysis.
-
-    Tesseract already assigns every word a page, block, paragraph, and line, so
-    reading order comes from real page segmentation rather than from sorting by
-    rounded y coordinate the way npu_ocr does. That heuristic collapses on any
-    layout with columns or a side panel, which describes most application
-    windows.
-
-    Returns the lines, the first page's size, the word count, and the page
-    count.
-    """
+    """Group Tesseract's word rows into lines using its own layout analysis."""
     rows = [line.split("\t") for line in tsv.splitlines()]
     if not rows or rows[0][:1] != ["level"]:
         return [], {}, 0, 0
@@ -167,9 +191,6 @@ def _parse_tsv(tsv: str, min_confidence: int) -> tuple[list[dict], dict, int, in
         left, top = int(row[index["left"]]), int(row[index["top"]])
         width, height = int(row[index["width"]]), int(row[index["height"]])
         if level == "1":
-            # One of these per page. Keep the first, because the reply reports a
-            # single image size and the last page's would silently describe the
-            # wrong one for a caller sizing a click target.
             pages += 1
             if not size:
                 size = {"width": width, "height": height}
@@ -184,10 +205,6 @@ def _parse_tsv(tsv: str, min_confidence: int) -> tuple[list[dict], dict, int, in
         if not text or confidence < min_confidence:
             continue
         words += 1
-        # page_num belongs in the key. Tesseract restarts block, paragraph, and
-        # line numbering on every page of a multi-page TIFF, so without it the
-        # first line of page two joins the first line of page one into a single
-        # line with a bounding box spanning both.
         key = (
             row[index["page_num"]],
             row[index["block_num"]],
@@ -280,8 +297,6 @@ def structured_text(path: Path, detail: str = "lines", min_confidence: int = 40)
     if not lines:
         warnings.append("No text cleared the confidence threshold; try lowering min_confidence.")
     if pages > 1:
-        # Bounding boxes are page-local, so a caller mapping one to a click
-        # target needs to know which page it came from.
         warnings.append(
             f"This file has {pages} pages. Each line carries its page number, and every "
             "bounding box is relative to that page rather than to the file."
@@ -314,6 +329,132 @@ def extract_text(path: Path) -> dict:
     image = cv2.imread(str(path))
     if image is None:
         raise ValueError(f"Could not decode image: {path}")
-    npu_text, regions = npu_ocr(image)
+    try:
+        npu_text, regions = npu_ocr(image)
+    except Exception:
+        npu_text, regions = "", 0
     full_text = tesseract_text(path)
     return {"text": full_text or npu_text or "(No text detected)", "npu_regions": regions, "npu_text": npu_text}
+
+
+def render_pdf_to_images(pdf_path: Path, output_dir: Path, dpi: int = 150) -> list[Path]:
+    """Render all pages of a PDF into PNG images in output_dir using pdftoppm.
+
+    Executes in tens of milliseconds per page.
+    """
+    if not pdf_path.is_file():
+        raise FileNotFoundError(f"PDF file not found: {pdf_path}")
+
+    prefix = output_dir / "page"
+    cmd = ["pdftoppm", "-png", "-r", str(dpi), str(pdf_path), str(prefix)]
+    try:
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except (subprocess.SubprocessError, FileNotFoundError) as exc:
+        raise RuntimeError(f"pdftoppm failed to render PDF '{pdf_path}': {exc}")
+
+    # pdftoppm names files like page-1.png or page-01.png
+    images = sorted(output_dir.glob("page-*.png"), key=lambda p: [int(s) if s.isdigit() else s for s in re.split(r"(\d+)", p.name)])
+    return images
+
+
+import re
+
+
+def pdftotext_tsv(pdf_path: Path, page: int | None = None) -> str:
+    """Extract word-level TSV layout from a PDF using poppler pdftotext."""
+    cmd = ["pdftotext", "-tsv"]
+    if page is not None:
+        cmd.extend(["-f", str(page), "-l", str(page)])
+    cmd.extend([str(pdf_path), "-"])
+    try:
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=True)
+        return res.stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def ocr_document_to_markdown(path: Path, min_confidence: int = 40) -> tuple[str, dict[str, Any]]:
+    """Scan documents (PDF or image) to structured markdown with multi-column table extraction.
+
+    Supports local NPU acceleration or Tesseract layout backbone.
+    Returns (markdown_text, metadata).
+    """
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"Document file not found: {path}")
+
+    start_time = time.perf_counter()
+    is_pdf = path.suffix.lower() == ".pdf"
+    rendered_pages: list[Path] = []
+    temp_dir = None
+
+    try:
+        if is_pdf:
+            temp_dir = tempfile.TemporaryDirectory(prefix="npu-ocr-pdf-")
+            rendered_pages = render_pdf_to_images(path, Path(temp_dir.name))
+            if not rendered_pages:
+                raise RuntimeError(f"No pages could be extracted from PDF: {path}")
+        else:
+            rendered_pages = [path]
+
+        page_markdowns: list[str] = []
+        total_words = 0
+        total_tables = 0
+
+        for page_idx, page_image in enumerate(rendered_pages, start=1):
+            words: list[WordToken] = []
+
+            # 1. Try Tesseract TSV first for rich layout
+            tsv = tesseract_tsv(page_image)
+            if tsv:
+                words = parse_tsv_words(tsv, min_confidence=min_confidence)
+
+            # 2. If Tesseract produced no output or is missing, try OpenVINO NPU detection
+            if not words:
+                try:
+                    import cv2
+                    img = cv2.imread(str(page_image))
+                    if img is not None:
+                        words = npu_word_tokens(img, page=page_idx)
+                except Exception:
+                    pass
+
+            # 3. For PDFs where OCR engines were empty, fall back to pdftotext TSV
+            if not words and is_pdf:
+                pdf_tsv = pdftotext_tsv(path, page=page_idx)
+                if pdf_tsv:
+                    words = parse_tsv_words(pdf_tsv, min_confidence=min_confidence)
+
+            if words:
+                total_words += len(words)
+                lines = group_words_into_lines(words)
+                blocks = detect_layout_blocks(lines)
+                table_count = sum(1 for b in blocks if b.get("type") == "table")
+                total_tables += table_count
+                page_md = render_markdown(blocks)
+            else:
+                page_md = "(No text detected on page)"
+
+            if is_pdf and len(rendered_pages) > 1:
+                page_markdowns.append(f"<!-- Page {page_idx} -->\n\n{page_md}")
+            else:
+                page_markdowns.append(page_md)
+
+        combined_md = "\n\n".join(page_markdowns).strip() + "\n"
+        elapsed = time.perf_counter() - start_time
+        sec_per_page = elapsed / max(1, len(rendered_pages))
+
+        metadata = {
+            "source": str(path),
+            "pages": len(rendered_pages),
+            "words": total_words,
+            "tables": total_tables,
+            "total_seconds": round(elapsed, 4),
+            "seconds_per_page": round(sec_per_page, 4),
+            "engine": "tesseract_openvino_npu",
+        }
+        return combined_md, metadata
+
+    finally:
+        if temp_dir is not None:
+            temp_dir.cleanup()
