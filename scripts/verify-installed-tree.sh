@@ -30,7 +30,7 @@ check() {
 echo "Commands:"
 for command in intel-npu-info intel-npu-mcp intel-npu-ocr \
                intel-npu-speech intel-npu-search intel-npu-panel \
-               "$NAME-setup"; do
+               intel-npu-transcribe "$NAME-setup"; do
   check "$PREFIX/bin/$command" test -x "$PREFIX/bin/$command"
 done
 

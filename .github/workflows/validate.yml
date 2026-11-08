@@ -24,7 +24,7 @@ jobs:
       - name: Verify the MCP entry point imports
         # OpenVINO is not installed here, so this also proves the heavy
         # inference imports stay lazy and the server starts on any machine.
-        run: PYTHONPATH=src python -c "from intel_npu_tools import mcp_server, ocr, audio, info, semantic, runtime, context_filter, rerank, config, desktop, panel"
+        run: PYTHONPATH=src python -c "from intel_npu_tools import mcp_server, ocr, audio, info, semantic, runtime, context_filter, rerank, transcribe, config, desktop, panel"
       - name: Validate desktop entries and build a package
         run: |
           sudo apt-get install -y desktop-file-utils librsvg2-bin

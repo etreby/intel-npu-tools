@@ -9,6 +9,7 @@ from .context_filter import filter_context
 from .ocr import capture_current_monitor, extract_text, structured_text
 from .paths import WHISPER_MODEL
 from .semantic import SemanticIndex
+from .transcribe import Transcript, transcribe as transcribe_recording
 
 
 mcp = MCPServer(
@@ -42,10 +43,30 @@ def npu_status() -> dict:
 
 
 @mcp.tool()
-def transcribe_audio(audio_path: str) -> str:
-    """Transcribe a local audio file on the Intel NPU."""
+def transcribe_audio(audio_path: str, formats: str | None = None) -> str | dict:
+    """Transcribe a local audio file on the Intel NPU.
+
+    With no formats argument this returns the plain transcript text, exactly
+    as before. Pass formats="vtt,srt,md" (any mix of those) and the language,
+    duration and every timestamped segment come back with the rendered WebVTT,
+    SubRip and Markdown documents — useful for meetings and lectures, where
+    the transcript has to say when each thing was said.
+    """
     path = local_file(audio_path, (".wav", ".mp3", ".m4a", ".flac", ".ogg", ".webm", ".opus"))
-    return transcribe_file(path)
+    if not formats:
+        return transcribe_file(path)
+    requested = {name.strip() for name in formats.split(",") if name.strip()}
+    transcript: Transcript = transcribe_recording(path)
+    rendered = {
+        "vtt": transcript.to_vtt,
+        "srt": transcript.to_srt,
+        "md": lambda: transcript.to_markdown(),
+        "json": transcript.to_dict,
+    }
+    unknown = sorted(requested - set(rendered))
+    if unknown:
+        raise ValueError(f"Unknown format(s) {unknown}; expected any of {sorted(rendered)}")
+    return {name: render() for name, render in sorted(rendered.items()) if name in requested}
 
 
 @mcp.tool()

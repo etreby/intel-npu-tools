@@ -38,7 +38,7 @@ if [ -d "$DESTROOT" ] && [ "$(cd -- "$DESTROOT" && pwd -P)" = "$PROJECT_DIR" ]; 
   refuse "it is the project directory"
 fi
 
-COMMANDS=(intel-npu-info intel-npu-mcp intel-npu-ocr intel-npu-speech intel-npu-search intel-npu-panel)
+COMMANDS=(intel-npu-info intel-npu-mcp intel-npu-ocr intel-npu-speech intel-npu-search intel-npu-panel intel-npu-transcribe)
 APPLICATIONS=(intel-npu-speech intel-npu-ocr intel-npu-panel)
 
 rm -rf "$DESTROOT"

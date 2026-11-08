@@ -128,6 +128,7 @@ as your own user to create the environment and download them.
 %{_bindir}/intel-npu-panel
 %{_bindir}/intel-npu-search
 %{_bindir}/intel-npu-speech
+%{_bindir}/intel-npu-transcribe
 %{_bindir}/intel-npu-tools-setup
 %{_prefix}/lib/intel-npu-tools
 %{_datadir}/applications/intel-npu-speech.desktop

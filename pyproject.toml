@@ -42,6 +42,7 @@ intel-npu-ocr = "intel_npu_tools.ocr_app:main"
 intel-npu-speech = "intel_npu_tools.speech_app:main"
 intel-npu-search = "intel_npu_tools.semantic:main"
 intel-npu-panel = "intel_npu_tools.panel:main"
+intel-npu-transcribe = "intel_npu_tools.transcribe:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

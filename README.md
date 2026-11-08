@@ -16,7 +16,7 @@ The NPU is a good fit for efficient background inference. It does **not** replac
 
 ## Features
 
-- **Speech to text:** multilingual Whisper Base INT8 runs locally on the NPU. Whisper Small is available for noisier rooms; see the [roadmap](docs/ROADMAP.md) for the accuracy and latency trade.
+- **Speech to text:** multilingual Whisper Base INT8 runs locally on the NPU. Whisper Small is available for noisier rooms; see the [roadmap](docs/ROADMAP.md) for the accuracy and latency trade. Whole recordings get timestamped output: `intel-npu-transcribe` turns a meeting recording into VTT, SRT and Markdown in seconds.
 - **Screenshot OCR:** select a region and copy recognized English or Arabic text.
 - **Private semantic search:** index local documents, logs, and source code with Qwen3-Embedding 0.6B INT8, then retrieve passages by meaning.
 - **Smaller agent context:** `context_filter` returns only the lines of a large log or file that answer a question, verbatim and with line numbers, and `screen_to_text` renders a screen as a few hundred tokens of structured text rather than a multi-thousand-token image.
@@ -145,6 +145,22 @@ On KDE, `install.sh` registers two global shortcuts:
 
 `Meta` is normally the Windows-logo key. **The shortcuts start working after your next login**, because KDE's shortcut daemon reads its configuration once at session start; restarting it during an install would briefly drop every other shortcut on the system. If you had already bound either application to a key of your own, the installer leaves your binding alone, and it refuses to write a key another component already owns rather than registering one KDE would silently discard. Speech uses `Meta+F9` rather than the `Meta+Alt+S` of earlier versions, because KDE's accessibility component binds `Meta+Alt+S` to "Toggle Screen Reader On and Off" by default, so that shortcut could never have worked. On a desktop without KDE's configuration tools the registration is skipped and the applications are launched from the desktop menu instead.
 
+## Transcribing recordings
+
+Dictation in the Speech to Text app answers *what was said*. `intel-npu-transcribe` answers the question a meeting or lecture recording raises afterwards: *what was said, and when*. It reads a file, streams the audio through the NPU in Whisper-sized windows cut at the nearest pause, and returns timestamped segments, writing WebVTT, SubRip and Markdown renderings next to it:
+
+```bash
+intel-npu-transcribe meeting.wav
+# writes meeting.vtt, meeting.srt and meeting.md in the same directory
+intel-npu-transcribe podcast.opus -o ~/Documents/transcripts --formats srt,md
+```
+
+Each Markdown paragraph carries the time it begins, and the header records the detected language and duration, so the transcript reads like notes rather than a teleprompter script. Timestamps come from the model itself (`return_timestamps`), shifted onto the file's timeline by the chunker, and chunks with no speech in them are skipped rather than transcribed, which is what keeps an empty conference room from becoming invented dialogue. The file formats are whatever ffmpeg reads: WAV, MP3, M4A, FLAC, OGG, OPUS and WEBM all work.
+
+Measured on Arrow Lake with Whisper Base: a 10.1 minute WAV transcribed in 12.3 seconds of wall time — about thirty times faster than real time — at 3.3 percent word error rate against a reference script read by a natural-voice synthesizer, with the machine's discrete GPUs untouched throughout. Whisper Small can be selected for noisier rooms the same way as for dictation: `INTEL_NPU_TOOLS_WHISPER_MODEL=whisper-small-int8-ov`.
+
+MCP agents get the same outputs from the `transcribe_audio` tool by passing `formats="vtt,srt,md"`; the reply then contains the language, duration, every timestamped segment, and the rendered documents.
+
 ## AI agent and MCP usage
 
 The local stdio MCP command is:
@@ -251,6 +267,7 @@ Any MCP client can use this stdio configuration:
 
 ```text
 Microphone/audio ──> Whisper Base INT8 ──> OpenVINO GenAI ──> Intel NPU
+Long audio file ──> pause-aligned chunks ──> the same Whisper pipeline ──> VTT/SRT/Markdown
 Screenshot/image ──┬─> text detector + recognizer ──> OpenVINO ──> Intel NPU
                    └─> Tesseract (preferred for layout, punctuation, Arabic)
 Local text ──> chunks ──> Qwen3 Embedding INT8 ──> Intel NPU ──> SQLite vectors
