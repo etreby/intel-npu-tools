@@ -23,6 +23,7 @@ TEXT_SUFFIXES = {
     ".py", ".rb", ".rs", ".rst", ".sh", ".sql", ".toml", ".ts", ".tsx",
     ".txt", ".xml", ".yaml", ".yml",
 }
+OFFICE_SUFFIXES = {".pdf", ".docx", ".pptx"}
 # Matched only against directories below the indexed root, never against its
 # ancestors.
 SKIP_DIRS = {
@@ -37,6 +38,7 @@ SKIP_DIRS = {
 # are .json/.txt/.xml and so pass TEXT_SUFFIXES on their own.
 WEIGHT_SUFFIXES = {".bin", ".gguf", ".onnx", ".pt", ".pth", ".safetensors"}
 MAX_FILE_BYTES = 2 * 1024 * 1024
+MAX_OFFICE_FILE_BYTES = 25 * 1024 * 1024
 # The pipeline truncates at 512 tokens, so chunks are kept short enough that
 # their tail still reaches the model. See docs/SEMANTIC_SEARCH.md.
 TARGET_CHUNK_CHARS = 1200
@@ -162,14 +164,16 @@ def chunk_text(
     return chunks
 
 
-def _is_indexable(path: Path) -> bool:
+def _is_indexable(path: Path, include_office: bool = True) -> bool:
     try:
-        return (
-            path.is_file()
-            and not path.is_symlink()
-            and path.suffix.lower() in TEXT_SUFFIXES
-            and path.stat().st_size <= MAX_FILE_BYTES
-        )
+        if not path.is_file() or path.is_symlink():
+            return False
+        suffix = path.suffix.lower()
+        if suffix in TEXT_SUFFIXES:
+            return path.stat().st_size <= MAX_FILE_BYTES
+        if include_office and suffix in OFFICE_SUFFIXES:
+            return path.stat().st_size <= MAX_OFFICE_FILE_BYTES
+        return False
     except OSError:
         return False
 
@@ -212,10 +216,10 @@ def _living_device(directory: Path) -> int | None:
     return None
 
 
-def iter_text_files(root: Path) -> Iterable[Path]:
+def iter_text_files(root: Path, include_office: bool = True) -> Iterable[Path]:
     """Yield indexable files below root. SKIP_DIRS applies to root's descendants only."""
     if root.is_file():
-        if _is_indexable(root):
+        if _is_indexable(root, include_office=include_office):
             yield root.resolve()
         return
     for directory, subdirectories, filenames in os.walk(root, followlinks=False):
@@ -228,7 +232,7 @@ def iter_text_files(root: Path) -> Iterable[Path]:
         )
         for name in sorted(filenames):
             path = Path(directory) / name
-            if _is_indexable(path):
+            if _is_indexable(path, include_office=include_office):
                 yield path.resolve()
 
 
@@ -336,11 +340,16 @@ class SemanticIndex:
             ),
         }
 
-    def index(self, value: str) -> dict:
+    def index(
+        self,
+        value: str,
+        include_office: bool = True,
+        include_media: bool = False,
+    ) -> dict:
         root = Path(value).expanduser().resolve()
         if not root.exists():
             return self._forget(root)
-        files = list(iter_text_files(root))
+        files = list(iter_text_files(root, include_office=include_office))
         updated = skipped = rechunked = chunks_added = 0
         with _connect(self.db_path) as db:
             for path in files:
@@ -354,10 +363,21 @@ class SemanticIndex:
                         continue
                     # Unchanged on disk, but chunked by an older release.
                     rechunked += 1
-                try:
-                    text = path.read_text(encoding="utf-8", errors="replace")
-                except OSError:
-                    continue
+                if path.suffix.lower() in OFFICE_SUFFIXES:
+                    from .extractors import DocumentExtractor
+
+                    try:
+                        sections = DocumentExtractor.extract_text(path)
+                    except Exception:
+                        continue
+                    if not sections:
+                        continue
+                    text = "\n\n".join(section_text for _, section_text in sections)
+                else:
+                    try:
+                        text = path.read_text(encoding="utf-8", errors="replace")
+                    except OSError:
+                        continue
                 pieces = chunk_text(text)
                 if not pieces:
                     continue
@@ -397,9 +417,10 @@ class SemanticIndex:
                 "root were re-embedded. Other indexed roots are untouched until you index them."
             )
         if not files:
+            all_suffixes = sorted(TEXT_SUFFIXES | (OFFICE_SUFFIXES if include_office else set()))
             result["warning"] = (
                 f"No indexable files found under {root}. Supported suffixes are "
-                f"{', '.join(sorted(TEXT_SUFFIXES))}; directories named "
+                f"{', '.join(all_suffixes)}; directories named "
                 f"{', '.join(sorted(SKIP_DIRS))}, directories holding model weights "
                 f"({', '.join(sorted(WEIGHT_SUFFIXES))}), and files over "
                 f"{MAX_FILE_BYTES // (1024 * 1024)} MiB are skipped."
@@ -482,8 +503,12 @@ class SemanticIndex:
 def main():
     parser = argparse.ArgumentParser(description="Private semantic search using Intel AI Boost")
     sub = parser.add_subparsers(dest="command", required=True)
-    index_parser = sub.add_parser("index", help="Index a text file or directory")
+    index_parser = sub.add_parser("index", help="Index a text or office file or directory")
     index_parser.add_argument("path")
+    index_parser.add_argument(
+        "--no-office", dest="include_office", action="store_false", default=True,
+        help="Exclude office documents (.pdf, .docx, .pptx)",
+    )
     search_parser = sub.add_parser("search", help="Search indexed text")
     search_parser.add_argument("query")
     search_parser.add_argument("--limit", type=int, default=5)
@@ -502,7 +527,7 @@ def main():
     args = parser.parse_args()
     index = SemanticIndex()
     if args.command == "index":
-        result = index.index(args.path)
+        result = index.index(args.path, include_office=args.include_office)
     elif args.command == "search":
         result = index.search(args.query, args.limit, args.root, args.rerank)
     else:

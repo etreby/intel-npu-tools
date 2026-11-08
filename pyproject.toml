@@ -29,6 +29,9 @@ dependencies = [
   "openvino-genai~=2026.2.1",
   "openvino-tokenizers~=2026.2.1",
   "pillow>=10",
+  "pypdf>=5.0.0",
+  "python-docx>=1.1.0",
+  "python-pptx>=1.0.0",
 ]
 
 [project.urls]
