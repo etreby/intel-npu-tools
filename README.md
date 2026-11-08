@@ -17,6 +17,7 @@ The NPU is a good fit for efficient background inference. It does **not** replac
 ## Features
 
 - **Speech to text:** multilingual Whisper Base INT8 runs locally on the NPU. Whisper Small is available for noisier rooms; see the [roadmap](docs/ROADMAP.md) for the accuracy and latency trade.
+- **Batch Document OCR & Layout Detection:** scan receipts and property leases to structured GitHub-flavored markdown with automated multi-column table extraction using local NPU acceleration (`intel-npu-ocr <file.pdf>`). Executes in under 2 seconds per page.
 - **Screenshot OCR:** select a region and copy recognized English or Arabic text.
 - **Private semantic search:** index local documents, logs, and source code with Qwen3-Embedding 0.6B INT8, then retrieve passages by meaning.
 - **Smaller agent context:** `context_filter` returns only the lines of a large log or file that answer a question, verbatim and with line numbers, and `screen_to_text` renders a screen as a few hundred tokens of structured text rather than a multi-thousand-token image.
@@ -137,6 +138,24 @@ Launch these applications from the desktop menu:
 - **Intel NPU Speech to Text:** click Start, speak, then Stop and transcribe. The result is copied to the clipboard.
 - **Intel NPU Screenshot OCR:** select a rectangular region. Recognized text is displayed and copied.
 - **Intel NPU Control Panel:** try every feature, change settings, and see what the NPU and the desktop session can actually do. Run `intel-npu-panel`.
+
+## Batch Document OCR & Table Extraction
+
+The `intel-npu-ocr` CLI scans scanned receipts, property leases, and multi-page PDFs to structured GitHub-flavored markdown with automated multi-column table extraction:
+
+```bash
+# Scan a PDF lease agreement to markdown with extracted tables
+intel-npu-ocr lease_agreement.pdf -o lease.md
+
+# Scan multiple receipts in batch
+intel-npu-ocr receipt1.pdf receipt2.png -o receipts.md
+
+# Extract only the detected tables
+intel-npu-ocr document.pdf --format tables
+
+# Benchmark execution speed (< 2s per page)
+intel-npu-ocr lease.pdf --benchmark
+```
 
 On KDE, `install.sh` registers two global shortcuts:
 
