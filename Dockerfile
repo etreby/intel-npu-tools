@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
     tesseract-ocr-eng \
     pciutils \
+ python3-tk \
     curl \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
