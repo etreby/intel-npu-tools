@@ -14,12 +14,26 @@ pipeline {
     }
 
     stages {
+        stage("Prepare") {
+            steps {
+                // The agent talks to the host docker daemon via the mounted socket:
+                // bind-mount sources must be valid paths ON THE HOST, not inside the
+                // Jenkins container. JENKINS_HOME is mounted from
+                // /mnt/BigData/Apps/jenkins/home, so translate $PWD accordingly.
+                script {
+                    env.HOST_WORKSPACE = sh(returnStdout: true,
+                        script: 'echo /mnt/BigData/Apps/jenkins/home${PWD#/var/jenkins_home}').trim()
+                    echo "Host workspace: ${env.HOST_WORKSPACE}"
+                }
+            }
+        }
+
         stage("Test (pytest)") {
             steps {
                 // Build the release image once, then run the pytest suite inside it
                 sh '''
                     docker build -q -t ${FULL_IMAGE}:${IMAGE_TAG} .
-                    docker run --rm -v "$PWD:/src" -w /src ${FULL_IMAGE}:${IMAGE_TAG} \
+                    docker run --rm -v "${HOST_WORKSPACE}:/src" -w /src ${FULL_IMAGE}:${IMAGE_TAG} \
                         sh -c "pip install -q pytest && pytest tests/ -q"
                 '''
             }
@@ -29,7 +43,7 @@ pipeline {
             steps {
                 // Hermetic build in debian:bookworm-slim (librsvg2-bin for icon conversion, fakeroot for dpkg-deb)
                 sh '''
-                    docker run --rm -v "$PWD:/src" -w /src debian:bookworm-slim \
+                    docker run --rm -v "${HOST_WORKSPACE}:/src" -w /src debian:bookworm-slim \
                         bash -c "apt-get update -qq && apt-get install -y -qq --no-install-recommends librsvg2-bin fakeroot >/dev/null && bash scripts/build-deb.sh dist/"
                     chmod 644 dist/*.deb
                     ls -la dist/
