@@ -123,9 +123,9 @@ def screen_to_text(
 
 
 @mcp.tool()
-def semantic_index(path: str) -> dict:
-    """Index a local text file or directory for private semantic search on the Intel NPU."""
-    return semantic.index(path)
+def semantic_index(path: str, include_office: bool = True) -> dict:
+    """Index a local text or office document or directory for private semantic search on the Intel NPU."""
+    return semantic.index(path, include_office=include_office)
 
 
 @mcp.tool()
